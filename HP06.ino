@@ -7,20 +7,19 @@
 #include <DHT.h>
 
 /*
-  HP06 - ESG Comfort Balancer v0.5 TWO BUTTON FULL
-  Board: ESP32U / ESP32-WROOM-32U + 39-pin expansion board
+  HP06 - ESG Comfort Balancer v0.6 - REM THEO HANH TRINH THUC TE + 2 NUT DIEU KHIEN
+  Board: ESP32U / ESP32-WROOM-32U + mach mo rong 39 chan
 
-  Core mission:
-  - Only intervene when occupancy is detected.
-  - If occupied and hot: turn on fan via Relay CH1.
-  - If occupied and dark: adjust curtain gradually with 28BYJ-48 stepper.
-  - Stop opening curtain if room becomes too hot.
-  - If still dark and curtain should not open more: turn on DC light via Relay CH2.
-  - Two-button interface: MODE/SELECT + ACTION/APPLY, including combo actions.
-  - Built-in blue LED gives network/motor heartbeat.
-  - External Green/Yellow/Red LEDs + buzzer give user feedback.
-  - Serial Monitor prints all important variables.
-  - ThingsBoard telemetry is strongly rate-limited to avoid server overload.
+  MUC TIEU COT LOI:
+  - Co nguoi moi can thiep.
+  - Neu phong nong: bat quat qua relay CH1.
+  - Neu phong thieu sang: uu tien chinh rem tung buoc bang dong co 28BYJ-48.
+  - Khong mo rem qua muc neu nhiet do da cao, vi mo rem qua nhieu co the lam phong nong hon.
+  - Neu van thieu sang nhung khong nen mo rem nua: bat den DC qua relay CH2.
+  - Hai nut bam tao giao dien nguoi dung toi gian: MODE/SELECT + ACTION/APPLY + cac lenh bam dong thoi.
+  - Them tinh toan hanh trinh rem theo chieu dai day keo va duong kinh banh cuon.
+  - Serial Monitor in day du bien de de debug.
+  - ThingsBoard bi gioi han tan suat gui de tranh day qua tai server.
 */
 
 // =====================================================
@@ -33,13 +32,16 @@ const char* TB_TOKEN      = "VPfucQ3EYR4SfxqitfX4";
 
 const char* TB_SERVER = "thingsboard.cloud";
 const int   TB_PORT   = 1883;
-const char* FW_VERSION = "HP06_v0.5.0_TWO_BUTTON_FULL";
+const char* FW_VERSION = "HP06_v0.6.0_CURTAIN_TRAVEL_VI";
 
-// Keep TRUE now that WiFi/MQTT worked. Safety limits below prevent ThingsBoard overload.
+// Bat/tat gui du lieu len ThingsBoard.
+// true  = dung WiFi/MQTT/ThingsBoard.
+// false = chi test phan cung cuc bo, khong gui cloud.
+// Luu y: ben duoi da co khoa an toan chong gui qua day.
 const bool ENABLE_CLOUD = true;
 
 // =====================================================
-// 2) PIN CONFIG - ESP32U + 39 PIN EXPANSION BOARD
+// 2) CAU HINH CHAN - ESP32U + MACH MO RONG 39 CHAN
 // =====================================================
 #define PIN_OLED_SDA 21
 #define PIN_OLED_SCL 22
@@ -56,11 +58,13 @@ const bool ENABLE_CLOUD = true;
 #define PIN_MOTOR_IN3 18
 #define PIN_MOTOR_IN4 19
 
-// Button 1: old config button, now MODE / SELECT.
+// Nut 1: MODE / SELECT.
+// Nhan ngan: doi menu OLED. Giu 2s: Auto/Manual. Giu 6s: Emergency Stop.
 #define PIN_BUTTON_MODE   32
 
-// Button 2: ACTION / APPLY. GPIO34 is input-only and has NO internal pull-up.
-// Hardware required: 3V3 -- 10k resistor -- P34, and P34 -- button -- GND.
+// Nut 2: ACTION / APPLY.
+// GPIO34 chi doc INPUT, KHONG co dien tro keo len noi bo.
+// Cach dau bat buoc: 3V3 -- dien tro 10k -- P34, va P34 -- nut bam -- GND.
 #define PIN_BUTTON_ACTION 34
 
 // External user feedback LEDs.
@@ -68,8 +72,9 @@ const bool ENABLE_CLOUD = true;
 #define PIN_LED_YELLOW 25
 #define PIN_LED_RED    33
 
-// Built-in blue LED on many ESP32 boards is GPIO2.
-// If your ESP32U board uses another onboard LED pin, change this value.
+// LED xanh duong onboard tren nhieu board ESP32 thuong la GPIO2.
+// Neu board ESP32U cua anh khong co LED onboard hoac LED nam o chan khac, hay doi PIN_LED_BLUE.
+// Neu van toi thui, co the board khong gan LED onboard; khi do he thong van dung LED xanh/vang/do ngoai.
 #define PIN_LED_BLUE    2
 
 // Active buzzer. If ESP32 has boot trouble with P4, disconnect buzzer during upload.
@@ -86,83 +91,125 @@ DHT dht(PIN_DHT, DHTTYPE);
 #define OLED_RESET -1
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-// If your LDR value gets higher when brighter, keep true.
-// If your LDR value gets lower when brighter, change to false.
+// Cam bien anh sang LDR: neu gia tri analog tang khi sang hon thi de true.
+// Neu anh che tay lam gia tri tang len, doi thanh false.
 const bool LDR_BRIGHTER_IS_HIGH = true;
 
 // =====================================================
-// 4) ESG THRESHOLDS - EASY TO CUSTOMIZE
+// 4) BO THONG SO TUY CHINH DAU VAO - NGUOI DUNG CHINH O DAY
 // =====================================================
-const unsigned long OCCUPANCY_HOLD_TIME = 60000UL;  // keep occupied for 60s after last PIR motion
+// Nguyen tac: neu muon thay doi hanh vi HP06, uu tien sua cac dong trong muc 4 nay.
 
-// Fan temperature hysteresis.
+// 4.1. HIEN DIEN NGUOI DUNG
+// PIR chi thay chuyen dong. Khi nguoi ngoi yen, PIR co the ve LOW.
+// OCCUPANCY_HOLD_TIME giu trang thai "co nguoi" them mot khoang sau lan chuyen dong cuoi.
+const unsigned long OCCUPANCY_HOLD_TIME = 60000UL;  // 60 giay
+
+// 4.2. VONG DIEU KHIEN NHIET DO - QUAT
+// Dung 2 nguong de relay khong bat/tat lien tuc.
+// Nhiet do >= TEMP_FAN_ON  -> bat quat.
+// Nhiet do <= TEMP_FAN_OFF -> tat quat.
 const float TEMP_FAN_ON  = 30.0;
 const float TEMP_FAN_OFF = 28.5;
 
-// Do not open curtain more if the room is already too hot.
+// Neu phong da qua nong, khong mo rem them de tranh nang/nhiet vao phong nhieu hon.
 const float TEMP_CURTAIN_LIMIT = 31.0;
 
-// Humidity warning only in this version.
+// Canh bao do am cao. Ban nay chi canh bao, chua dieu khien may phun am.
 const float HUMIDITY_HIGH_WARNING = 75.0;
 
-// Light thresholds. Tune using Serial Monitor.
+// 4.3. VONG DIEU KHIEN ANH SANG - REM - DEN
+// Gia tri nay phai can bang theo Serial Monitor cua cam bien LDR thuc te.
+// lightScore < LIGHT_MIN  -> thieu sang, uu tien mo rem.
+// lightScore gan LIGHT_TARGET -> muc mong muon.
+// lightScore > LIGHT_MAX  -> qua sang, co the dong rem bot.
 const int LIGHT_MIN    = 1600;
 const int LIGHT_TARGET = 2300;
 const int LIGHT_MAX    = 3200;
 
-// If dark persists longer than this while curtain cannot/should not move, use DC light.
-const unsigned long DARK_LIGHT_ASSIST_DELAY = 20000UL;
+// Neu phong toi qua lau ma rem khong nen/khong the mo them, moi bat den DC.
+const unsigned long DARK_LIGHT_ASSIST_DELAY = 20000UL;  // 20 giay
 
-// Curtain control.
+// 4.4. HANH TRINH REM THEO KICH THUOC THUC TE
+// Day la phan quan trong de dong co "biet" can quay bao nhieu vong cho tung loai cua so.
+// Cach hieu:
+// - CURTAIN_TOTAL_TRAVEL_MM: chieu dai day can keo/thu de rem di tu dong het sang mo het.
+//   Gia tri nay KHONG nhat thiet bang chieu rong cua so; hay do hanh trinh day keo thuc te.
+// - TAKEUP_DRUM_DIAMETER_MM: duong kinh banh/trong cuon day keo rem.
+// - MOTOR_HALF_STEPS_PER_REV: 28BYJ-48 thuong khoang 4096 half-step cho 1 vong truc ra.
+// - MOTOR_TO_DRUM_RATIO: neu truc motor noi truc tiep banh cuon, de 1.0.
+//   Neu motor quay 2 vong thi banh cuon moi quay 1 vong, de 2.0.
+// - MECHANICAL_COMPENSATION: bu sai so truot day, dan hoi, lap rap; thuong 1.00 den 1.20.
+// Khi dang test tren ban, de false de motor khong quay qua lau.
+// Khi da gan vao co cau rem that va da do hanh trinh/duong kinh banh cuon, doi thanh true.
+const bool USE_GEOMETRY_CURTAIN_CALIBRATION = false;
+
+// Neu USE_GEOMETRY_CURTAIN_CALIBRATION=false, code dung thong so don gian nay.
+// Gia tri 20 nghia la 1% hanh trinh = 20 half-step, giong ban test truoc do.
+const int MOTOR_MANUAL_STEPS_PER_PERCENT = 20;
+
+// Neu USE_GEOMETRY_CURTAIN_CALIBRATION=true, code tinh step theo thong so co khi ben duoi.
+const float CURTAIN_TOTAL_TRAVEL_MM = 1200.0;   // Vi du: day can keo 1200mm de het hanh trinh
+const float TAKEUP_DRUM_DIAMETER_MM = 20.0;     // Vi du: banh cuon duong kinh 20mm
+const float MOTOR_HALF_STEPS_PER_REV = 4096.0;  // 28BYJ-48 half-step
+const float MOTOR_TO_DRUM_RATIO = 1.0;          // 1.0 = noi truc tiep
+const float MECHANICAL_COMPENSATION = 1.10;     // cong them 10% de bu sai so
+
+// Vi tri rem trong code la 0-100%.
+// 0% = dong nhieu / 100% = mo nhieu.
 const int CURTAIN_MIN_POS = 0;
 const int CURTAIN_MAX_POS = 100;
-const int CURTAIN_STEP_PERCENT = 5;         // auto step
-const int MANUAL_CURTAIN_STEP_PERCENT = 20; // button/manual step
+const int CURTAIN_START_POS_PERCENT = 50;       // gia dinh vi tri ban dau khi bat nguon
+const int CURTAIN_STEP_PERCENT = 5;             // auto moi lan chinh nhe 5%
+const int MANUAL_CURTAIN_STEP_PERCENT = 20;     // bam nut dieu khien thu cong moi lan 20%
 
-// Tune for the real curtain length and pulley/gear mechanism.
-const int MOTOR_STEPS_PER_PERCENT = 20;
-
-// If open/close direction is reversed, change 1 to -1.
+// Neu nhan OPEN ma rem lai dong, doi 1 thanh -1.
 const int MOTOR_OPEN_DIRECTION = 1;
 
-// Visible test for 28BYJ-48. 2048 half-steps is usually visible.
+// Test motor nhin thay ro. Neu van kho thay, tang 2048 len 4096.
 const int MOTOR_VISIBLE_TEST_STEPS = 2048;
 const int MOTOR_STEP_DELAY_MS = 3;
 const unsigned long CURTAIN_ADJUST_INTERVAL = 10000UL;
 
-// Fan safety.
-const unsigned long FAN_MAX_ON_TIME   = 180000UL;  // max 3 minutes per run
-const unsigned long FAN_COOLDOWN_TIME = 300000UL;  // 5 minutes cooldown before next run
+// 4.5. AN TOAN QUAT
+const unsigned long FAN_MAX_ON_TIME   = 180000UL;  // toi da 3 phut moi lan chay
+const unsigned long FAN_COOLDOWN_TIME = 300000UL;  // nghi 5 phut truoc khi bat lai
 
-// Button timing.
+// 4.6. NUT BAM
 const unsigned long BUTTON_DEBOUNCE_MS = 40UL;
 const unsigned long BUTTON_SHORT_MIN_MS = 50UL;
 const unsigned long BUTTON_LONG_MS = 2000UL;
 const unsigned long BUTTON_VERY_LONG_MS = 6000UL;
 
-// Display / serial loops.
+// 4.7. CHU KY HIEN THI / DOC CAM BIEN / SERIAL
 const unsigned long SENSOR_INTERVAL  = 2500UL;
 const unsigned long DISPLAY_INTERVAL = 700UL;
 const unsigned long SERIAL_INTERVAL  = 3000UL;
 
-// WiFi/MQTT retry.
+// 4.8. WIFI / MQTT
 const unsigned long WIFI_RETRY_INTERVAL = 15000UL;
 const unsigned long MQTT_RETRY_INTERVAL = 20000UL;
 
-// ThingsBoard safe upload limits.
-const unsigned long TB_FIRST_SEND_DELAY       = 30000UL;   // no publish during first 30s
-const unsigned long TB_TELEMETRY_INTERVAL     = 120000UL;  // periodic telemetry every 120s
-const unsigned long TB_STATE_EVENT_INTERVAL   = 180000UL;  // state event at most every 180s
-const unsigned long TB_GLOBAL_MIN_PUBLISH_GAP = 60000UL;   // any publish at least 60s apart
+// 4.9. KHOA AN TOAN THINGSBOARD - CHONG DAY QUA TAI SERVER
+// Ke ca khi nguoi dung bam nut nhieu lan, cloud van khong bi gui lien tuc.
+const unsigned long TB_FIRST_SEND_DELAY       = 30000UL;
+const unsigned long TB_TELEMETRY_INTERVAL     = 120000UL;
+const unsigned long TB_STATE_EVENT_INTERVAL   = 180000UL;
+const unsigned long TB_GLOBAL_MIN_PUBLISH_GAP = 60000UL;
 const unsigned long TB_HOUR_WINDOW_MS         = 3600000UL;
 const unsigned int  TB_MAX_PUBLISH_PER_HOUR   = 40;
 
-// Relay modules are often active LOW.
+// 4.10. DAO LOGIC PHAN CUNG
+// Relay 5V pho bien la active LOW: LOW = bat, HIGH = tat.
 const bool RELAY_ACTIVE_LOW = true;
 
-// LED/Buzzer polarity.
+// LED/còi ngoai thuong active HIGH.
 const bool LED_ACTIVE_HIGH = true;
-const bool BLUE_LED_ACTIVE_HIGH = true;
+
+// LED xanh duong onboard cua nhieu board ESP32 co the active LOW.
+// Ban truoc anh bao LED xanh duong toi thui, nen v0.6 de false de thu active LOW.
+// Neu LED xanh duong sang nguoc, doi false thanh true. Neu board khong co LED onboard thi khong anh huong.
+const bool BLUE_LED_ACTIVE_HIGH = false;
 const bool BUZZER_ACTIVE_HIGH = true;
 
 // =====================================================
@@ -178,6 +225,8 @@ enum ControlMenu : uint8_t {
   MENU_DASHBOARD = 0,
   MENU_CURTAIN_OPEN,
   MENU_CURTAIN_CLOSE,
+  MENU_CURTAIN_FULL_OPEN,
+  MENU_CURTAIN_FULL_CLOSE,
   MENU_FAN_TOGGLE,
   MENU_LIGHT_TOGGLE,
   MENU_SMART_ASSIST,
@@ -206,7 +255,7 @@ bool lightOn = false;
 bool autoMode = true;
 bool emergencyStopActive = false;
 
-int curtainPosPercent = 50;  // assumed initial curtain position
+int curtainPosPercent = CURTAIN_START_POS_PERCENT;  // vi tri rem gia dinh khi khoi dong
 
 unsigned long fanStartedAt = 0;
 unsigned long fanLastOffAt = 0;
@@ -318,6 +367,73 @@ void buzzerWrite(bool on) {
 
 void relayWrite(int pin, bool on) {
   digitalWrite(pin, RELAY_ACTIVE_LOW ? (on ? LOW : HIGH) : (on ? HIGH : LOW));
+}
+
+// =====================================================
+// 10.1) TINH TOAN HANH TRINH REM
+// =====================================================
+// Cong thuc co ban:
+// chu_vi_banh_cuon = PI * duong_kinh
+// so_vong_banh_cuon = hanh_trinh_day / chu_vi_banh_cuon
+// so_vong_motor = so_vong_banh_cuon * ti_so_truyen
+// tong_step = so_vong_motor * step_moi_vong * he_so_bu_sai
+float curtainDrumCircumferenceMm() {
+  return PI * TAKEUP_DRUM_DIAMETER_MM;
+}
+
+long curtainTotalSteps() {
+  if (!USE_GEOMETRY_CURTAIN_CALIBRATION) {
+    return (long)MOTOR_MANUAL_STEPS_PER_PERCENT * 100L;
+  }
+
+  float circumference = curtainDrumCircumferenceMm();
+  if (circumference <= 0.1) return 1;
+
+  float drumRevs = CURTAIN_TOTAL_TRAVEL_MM / circumference;
+  float motorRevs = drumRevs * MOTOR_TO_DRUM_RATIO;
+  float totalSteps = motorRevs * MOTOR_HALF_STEPS_PER_REV * MECHANICAL_COMPENSATION;
+
+  if (totalSteps < 100.0) totalSteps = 100.0;
+  return lround(totalSteps);
+}
+
+long curtainStepsPerPercent() {
+  if (!USE_GEOMETRY_CURTAIN_CALIBRATION) {
+    return max(1, MOTOR_MANUAL_STEPS_PER_PERCENT);
+  }
+
+  long total = curtainTotalSteps();
+  long per = lround((float)total / 100.0);
+  if (per < 1) per = 1;
+  return per;
+}
+
+float curtainDrumRevolutionsForFullTravel() {
+  float circumference = curtainDrumCircumferenceMm();
+  if (circumference <= 0.1) return 0;
+  return CURTAIN_TOTAL_TRAVEL_MM / circumference;
+}
+
+float motorRevolutionsForFullTravel() {
+  return curtainDrumRevolutionsForFullTravel() * MOTOR_TO_DRUM_RATIO;
+}
+
+void printCurtainCalibration() {
+  Serial.println("-- CAU HINH HANH TRINH REM --");
+  Serial.print("USE_GEOMETRY_CURTAIN_CALIBRATION="); Serial.print(USE_GEOMETRY_CURTAIN_CALIBRATION ? "true" : "false");
+  Serial.print(" | MOTOR_MANUAL_STEPS_PER_PERCENT="); Serial.println(MOTOR_MANUAL_STEPS_PER_PERCENT);
+  Serial.print("CURTAIN_TOTAL_TRAVEL_MM="); Serial.print(CURTAIN_TOTAL_TRAVEL_MM, 1);
+  Serial.print(" | TAKEUP_DRUM_DIAMETER_MM="); Serial.print(TAKEUP_DRUM_DIAMETER_MM, 1);
+  Serial.print(" | DRUM_CIRCUMFERENCE_MM="); Serial.println(curtainDrumCircumferenceMm(), 1);
+
+  Serial.print("DRUM_REVS_FULL="); Serial.print(curtainDrumRevolutionsForFullTravel(), 2);
+  Serial.print(" | MOTOR_TO_DRUM_RATIO="); Serial.print(MOTOR_TO_DRUM_RATIO, 2);
+  Serial.print(" | MOTOR_REVS_FULL="); Serial.println(motorRevolutionsForFullTravel(), 2);
+
+  Serial.print("MOTOR_HALF_STEPS_PER_REV="); Serial.print(MOTOR_HALF_STEPS_PER_REV, 0);
+  Serial.print(" | COMPENSATION="); Serial.print(MECHANICAL_COMPENSATION, 2);
+  Serial.print(" | TOTAL_STEPS_FULL="); Serial.print(curtainTotalSteps());
+  Serial.print(" | STEPS_PER_PERCENT="); Serial.println(curtainStepsPerPercent());
 }
 
 void startBeep(int count, unsigned int onMs = 50, unsigned int offMs = 80) {
@@ -434,7 +550,7 @@ void adjustCurtainPercent(int deltaPercent, const char* reason) {
     return;
   }
 
-  long motorSteps = (long)actualDelta * MOTOR_STEPS_PER_PERCENT * MOTOR_OPEN_DIRECTION;
+  long motorSteps = (long)actualDelta * curtainStepsPerPercent() * MOTOR_OPEN_DIRECTION;
   lastMotorDeltaPercent = actualDelta;
   lastMotorDiag = String(reason);
 
@@ -453,6 +569,12 @@ void adjustCurtainPercent(int deltaPercent, const char* reason) {
   curtainPosPercent = target;
   lastCurtainAdjustAt = millis();
   lastUserAction = String("CURTAIN_") + reason;
+}
+
+void moveCurtainToPercent(int targetPercent, const char* reason) {
+  int target = constrain(targetPercent, CURTAIN_MIN_POS, CURTAIN_MAX_POS);
+  int delta = target - curtainPosPercent;
+  adjustCurtainPercent(delta, reason);
 }
 
 void motorVisibleTest() {
@@ -714,6 +836,8 @@ const char* menuName(ControlMenu m) {
     case MENU_DASHBOARD: return "DASHBOARD";
     case MENU_CURTAIN_OPEN: return "CURTAIN_OPEN";
     case MENU_CURTAIN_CLOSE: return "CURTAIN_CLOSE";
+    case MENU_CURTAIN_FULL_OPEN: return "FULL_OPEN";
+    case MENU_CURTAIN_FULL_CLOSE: return "FULL_CLOSE";
     case MENU_FAN_TOGGLE: return "FAN_TOGGLE";
     case MENU_LIGHT_TOGGLE: return "LIGHT_TOGGLE";
     case MENU_SMART_ASSIST: return "SMART_ASSIST";
@@ -759,6 +883,18 @@ void applyCurrentMenu() {
       autoMode = false;
       emergencyStopActive = false;
       adjustCurtainPercent(-MANUAL_CURTAIN_STEP_PERCENT, "MANUAL_CLOSE_BTN");
+      break;
+
+    case MENU_CURTAIN_FULL_OPEN:
+      autoMode = false;
+      emergencyStopActive = false;
+      moveCurtainToPercent(CURTAIN_MAX_POS, "MANUAL_FULL_OPEN_BTN");
+      break;
+
+    case MENU_CURTAIN_FULL_CLOSE:
+      autoMode = false;
+      emergencyStopActive = false;
+      moveCurtainToPercent(CURTAIN_MIN_POS, "MANUAL_FULL_CLOSE_BTN");
       break;
 
     case MENU_FAN_TOGGLE:
@@ -902,6 +1038,28 @@ void updateExternalLeds() {
   ledWrite(PIN_LED_GREEN, green);
   ledWrite(PIN_LED_YELLOW, yellow);
   ledWrite(PIN_LED_RED, red);
+}
+
+
+void blueLedSelfTest() {
+  lastUserAction = "BLUE_LED_SELF_TEST";
+  Serial.println();
+  Serial.println("========== BLUE LED SELF TEST ==========");
+  Serial.println("Neu LED xanh duong onboard van toi, board co the khong co LED onboard hoac khong nam o GPIO2.");
+  Serial.println("Test truc tiep HIGH/LOW de kiem tra ca hai kha nang active HIGH/LOW.");
+
+  for (int i = 0; i < 6; i++) {
+    digitalWrite(PIN_LED_BLUE, HIGH);
+    Serial.println("PIN_LED_BLUE = HIGH");
+    delay(250);
+    digitalWrite(PIN_LED_BLUE, LOW);
+    Serial.println("PIN_LED_BLUE = LOW");
+    delay(250);
+  }
+
+  blueLedWrite(false);
+  Serial.println("BLUE LED SELF TEST DONE.");
+  Serial.println("========================================");
 }
 
 void updateBlueLed() {
@@ -1061,6 +1219,10 @@ void sendTelemetry(bool allowStateEvent) {
   doc["fan_on"] = fanOn;
   doc["light_on"] = lightOn;
   doc["curtain_pos"] = curtainPosPercent;
+  doc["curtain_total_steps"] = curtainTotalSteps();
+  doc["curtain_steps_per_percent"] = curtainStepsPerPercent();
+  doc["curtain_travel_mm"] = CURTAIN_TOTAL_TRAVEL_MM;
+  doc["takeup_drum_diameter_mm"] = TAKEUP_DRUM_DIAMETER_MM;
   doc["motor_move_count"] = motorMoveCount;
   doc["last_motor_steps"] = lastMotorSteps;
 
@@ -1253,20 +1415,24 @@ void updateOLED() {
 // =====================================================
 void printHelp() {
   Serial.println();
-  Serial.println("===== HP06 v0.5 SERIAL COMMANDS =====");
-  Serial.println("h = help");
-  Serial.println("a = toggle auto mode");
-  Serial.println("f = toggle fan relay CH1");
-  Serial.println("l = toggle light relay CH2");
-  Serial.println("o = open curtain manual step");
-  Serial.println("c = close curtain manual step");
-  Serial.println("m = motor visible test: open then close");
-  Serial.println("k = ULN2003 coil walk test");
-  Serial.println("p = next OLED page");
-  Serial.println("b = buzzer test");
-  Serial.println("g/y/r = external LED green/yellow/red test");
-  Serial.println("s = emergency stop outputs and set manual mode");
-  Serial.println("=====================================");
+  Serial.println("===== LENH SERIAL HP06 v0.6 =====");
+  Serial.println("h = hien bang tro giup");
+  Serial.println("a = bat/tat Auto Mode");
+  Serial.println("f = bat/tat quat relay CH1");
+  Serial.println("l = bat/tat den relay CH2");
+  Serial.println("o = mo rem theo buoc thu cong");
+  Serial.println("c = dong rem theo buoc thu cong");
+  Serial.println("O = mo rem het hanh trinh 100%");
+  Serial.println("C = dong rem ve 0%");
+  Serial.println("m = test motor mo roi dong de nhin ro chuyen dong");
+  Serial.println("k = test tung cuon ULN2003 IN1-IN4");
+  Serial.println("u = test LED xanh duong onboard HIGH/LOW");
+  Serial.println("p = doi trang OLED");
+  Serial.println("b = test coi buzzer");
+  Serial.println("g/y/r = test LED ngoai xanh/vang/do");
+  Serial.println("s = dung khan cap, tat output, chuyen Manual");
+  Serial.println("Nut: MODE ngan=doi menu | ACTION ngan=thuc thi | 2 nut ngan=Smart Assist | 2 nut 2s=Coil Test | 2 nut 6s=Stop");
+  Serial.println("=================================");
 }
 
 void printStatus() {
@@ -1290,11 +1456,12 @@ void printStatus() {
   Serial.print(" | LDR_BRIGHTER_IS_HIGH="); Serial.println(LDR_BRIGHTER_IS_HIGH ? "true" : "false");
 
   Serial.print("CURTAIN_MIN/MAX="); Serial.print(CURTAIN_MIN_POS); Serial.print("/"); Serial.print(CURTAIN_MAX_POS);
+  Serial.print(" | START_%="); Serial.print(CURTAIN_START_POS_PERCENT);
   Serial.print(" | AUTO_STEP_%="); Serial.print(CURTAIN_STEP_PERCENT);
   Serial.print(" | MANUAL_STEP_%="); Serial.print(MANUAL_CURTAIN_STEP_PERCENT);
-  Serial.print(" | STEPS_PER_%="); Serial.print(MOTOR_STEPS_PER_PERCENT);
   Serial.print(" | OPEN_DIR="); Serial.print(MOTOR_OPEN_DIRECTION);
   Serial.print(" | VISIBLE_TEST_STEPS="); Serial.println(MOTOR_VISIBLE_TEST_STEPS);
+  printCurtainCalibration();
 
   Serial.println("-- SENSORS --");
   Serial.print("dhtOk="); Serial.print(dhtOk ? "YES" : "NO");
@@ -1362,7 +1529,7 @@ void printStatus() {
   Serial.print(" | lastTbType="); Serial.print(lastTbType);
   Serial.print(" | lastTbResult="); Serial.println(lastTbResult);
 
-  Serial.println("Commands: h | a | f | l | o | c | m | k | p | b | g/y/r | s");
+  Serial.println("Commands: h | a | f | l | o/c step | O/C full | m motor test | k coil | u blueLED | p page | b beep | g/y/r LED | s stop");
   Serial.println("Button: MODE short=next menu | ACTION short=apply | BOTH short=smart | BOTH 2s=coil walk | BOTH 6s=stop");
   Serial.println("==================================================");
 }
@@ -1389,14 +1556,22 @@ void handleSerialCommand() {
     emergencyStopActive = false;
     setLight(!lightOn);
     lastUserAction = "SERIAL_LIGHT_TOGGLE";
-  } else if (cmd == 'o' || cmd == 'O') {
+  } else if (cmd == 'o') {
     autoMode = false;
     emergencyStopActive = false;
-    adjustCurtainPercent(MANUAL_CURTAIN_STEP_PERCENT, "SERIAL_OPEN");
-  } else if (cmd == 'c' || cmd == 'C') {
+    adjustCurtainPercent(MANUAL_CURTAIN_STEP_PERCENT, "SERIAL_OPEN_STEP");
+  } else if (cmd == 'c') {
     autoMode = false;
     emergencyStopActive = false;
-    adjustCurtainPercent(-MANUAL_CURTAIN_STEP_PERCENT, "SERIAL_CLOSE");
+    adjustCurtainPercent(-MANUAL_CURTAIN_STEP_PERCENT, "SERIAL_CLOSE_STEP");
+  } else if (cmd == 'O') {
+    autoMode = false;
+    emergencyStopActive = false;
+    moveCurtainToPercent(CURTAIN_MAX_POS, "SERIAL_FULL_OPEN");
+  } else if (cmd == 'C') {
+    autoMode = false;
+    emergencyStopActive = false;
+    moveCurtainToPercent(CURTAIN_MIN_POS, "SERIAL_FULL_CLOSE");
   } else if (cmd == 'm' || cmd == 'M') {
     emergencyStopActive = false;
     motorVisibleTest();
@@ -1419,6 +1594,8 @@ void handleSerialCommand() {
   } else if (cmd == 'r' || cmd == 'R') {
     ledWrite(PIN_LED_RED, true); delay(500); ledWrite(PIN_LED_RED, false);
     lastUserAction = "SERIAL_LED_RED_TEST";
+  } else if (cmd == 'u' || cmd == 'U') {
+    blueLedSelfTest();
   } else if (cmd == 's' || cmd == 'S') {
     emergencyStop("SERIAL");
   }
@@ -1435,7 +1612,7 @@ void setup() {
   tbHourWindowStart = bootAt;
 
   Serial.println();
-  Serial.println("Booting HP06 ESG Comfort Balancer v0.5 TWO BUTTON FULL...");
+  Serial.println("Booting HP06 ESG Comfort Balancer v0.6 CURTAIN TRAVEL VI...");
 
   pinMode(PIN_PIR, INPUT);
   pinMode(PIN_RELAY_FAN, OUTPUT);
@@ -1474,7 +1651,7 @@ void setup() {
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(0, 0);
-    display.println("HP06 ESG v0.5");
+    display.println("HP06 ESG v0.6");
     display.println("Two Button UI");
     display.println("Booting...");
     display.display();
